@@ -1,90 +1,46 @@
-import os
-import uuid
-import yt_dlp
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+import telebot
+import requests
 
+# 🔹 Вставь сюда свой токен от BotFather
 TOKEN = "8372930034:AAFVPhVEcsWLxNONkcbmpzVYXI2K0Z2Oiu8"
+bot = telebot.TeleBot(TOKEN)
 
-# --- Команда /start ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "👋 Привет! Я помогу тебе найти музыку.\n\n"
-        "🎧 Напиши название песни или исполнителя — и я покажу список."
-    )
+@bot.message_handler(commands=['start'])
+def start(message):
+    bot.reply_to(message, "🎵 Привет! Отправь название песни, и я найду несколько вариантов 🎧")
 
-# --- Поиск песен ---
-async def search_music(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.message.text.strip()
-    await update.message.reply_text(f"🔍 Ищу: {query}...")
+@bot.message_handler(func=lambda message: True)
+def search_music(message):
+    query = message.text.strip()
+    if not query:
+        bot.reply_to(message, "⚠️ Напиши название песни или исполнителя.")
+        return
 
-    try:
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'noplaylist': True,
-            'quiet': True,
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            results = ydl.extract_info(f"ytsearch5:{query}", download=False)['entries']
+    bot.send_chat_action(message.chat.id, 'typing')
 
-        buttons = []
-        for i, entry in enumerate(results[:5]):
-            title = entry['title'][:60]
-            video_id = entry['id']
-            buttons.append([InlineKeyboardButton(f"🎵 {title}", callback_data=video_id)])
+    url = f"https://itunes.apple.com/search?term={query}&limit=5"
+    response = requests.get(url)
 
-        reply_markup = InlineKeyboardMarkup(buttons)
-        await update.message.reply_text("Выбери песню:", reply_markup=reply_markup)
+    if response.status_code != 200:
+        bot.reply_to(message, "❌ Ошибка при поиске, попробуй позже.")
+        return
 
-    except Exception as e:
-        print("Ошибка поиска:", e)
-        await update.message.reply_text("❌ Не удалось найти. Попробуй другое название.")
+    data = response.json()
+    results = data.get("results", [])
 
-# --- Обработка выбора ---
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
+    if not results:
+        bot.reply_to(message, "😕 Ничего не найдено. Попробуй другое название.")
+        return
 
-    video_id = query.data
-    await query.edit_message_text("🎧 Скачиваю выбранную песню...")
+    reply = "🎧 Нашёл несколько песен:\n\n"
+    for track in results:
+        track_name = track.get("trackName", "Без названия")
+        artist = track.get("artistName", "Неизвестен")
+        preview = track.get("previewUrl", None)
+        if preview:
+            reply += f"🎵 *{track_name}* — {artist}\n▶️ [Слушать]({preview})\n\n"
 
-    tmp_name = f"track_{uuid.uuid4().hex}"
-    ydl_opts = {
-        'format': 'bestaudio/best',
-        'outtmpl': tmp_name + '.%(ext)s',
-        'quiet': True,
-        'postprocessors': [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '192',
-        }],
-    }
+    bot.send_message(message.chat.id, reply, parse_mode="Markdown")
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=True)
-            filename = ydl.prepare_filename(info)
-            filename = os.path.splitext(filename)[0] + ".mp3"
-
-            await query.message.reply_audio(
-                audio=open(filename, 'rb'),
-                title=info.get('title', 'Music'),
-                caption="✅ Готово! 🎶"
-            )
-            os.remove(filename)
-    except Exception as e:
-        print("Ошибка загрузки:", e)
-        await query.message.reply_text("❌ Не удалось скачать трек.")
-
-# --- Запуск ---
-def main():
-    app = ApplicationBuilder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_music))
-    app.add_handler(CallbackQueryHandler(button_callback))
-
-    print("✅ Бот запущен! Напиши ему в Telegram.")
-    app.run_polling()
-
-if __name__ == "__main__":
-    main()
+print("Бот запущен...")
+bot.polling(none_stop=True)
